@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Value Investing Stock Scorer - Based on Roger Montgomery's Value.able methodology
+Value Investing Stock Scorer
 Evaluates companies based on quality metrics with emphasis on ROE, debt, and cash flow
 
 NOTE: This script requires an active internet connection to fetch data from Yahoo Finance.
@@ -25,12 +25,12 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # Default cache settings
-DEFAULT_CACHE_DIR = os.path.expanduser("~/.montgomery_cache")
+DEFAULT_CACHE_DIR = os.path.expanduser("~/.value_scorer_cache")
 DEFAULT_CACHE_EXPIRY_HOURS = 24
 
-class MontgomeryValueScorer:
+class ValueScorer:
     """
-    Implements Roger Montgomery's value investing scoring methodology
+    Value investing scoring methodology
     Focus on high ROE, low debt, consistent earnings, and attractive valuations
     """
 
@@ -405,10 +405,10 @@ class MontgomeryValueScorer:
         metrics['Current Price'] = info.get('currentPrice', info.get('regularMarketPrice', 0))
         metrics['Market Cap (B)'] = info.get('marketCap', 0) / 1e9
         
-        # Montgomery's key metric: Return on Equity (ROE)
+        # Key metric: Return on Equity (ROE)
         metrics['ROE (%)'] = info.get('returnOnEquity', 0) * 100 if info.get('returnOnEquity') else 0
         
-        # Debt metrics - Montgomery prefers low/no debt companies
+        # Debt metrics - prefer low/no debt companies
         total_debt = info.get('totalDebt', 0)
         # Get equity from balance sheet (more reliable than info dict)
         total_equity = 0
@@ -619,9 +619,9 @@ class MontgomeryValueScorer:
 
         return metrics
     
-    def calculate_montgomery_score(self, metrics):
+    def calculate_quality_score(self, metrics):
         """
-        Calculate Montgomery-style value score (0-100)
+        Calculate value investing quality score (0-100)
         Heavy emphasis on ROE, debt levels, and cash generation
         """
         if not metrics:
@@ -630,7 +630,7 @@ class MontgomeryValueScorer:
         score = 0
         max_score = 100
         
-        # 1. ROE Score (30 points) - Montgomery's primary quality metric
+        # 1. ROE Score (30 points) - primary quality metric
         roe = metrics.get('ROE (%)', 0)
         avg_roe = metrics.get('5Y Avg ROE (%)', roe)
         
@@ -652,7 +652,7 @@ class MontgomeryValueScorer:
         
         score += roe_score
         
-        # 2. Debt Score (25 points) - Montgomery prefers low/no debt
+        # 2. Debt Score (25 points) - prefer low/no debt
         debt_to_equity = metrics.get('Debt to Equity', 999)
         
         if debt_to_equity == 0:
@@ -706,7 +706,7 @@ class MontgomeryValueScorer:
         else:
             pe_score = 0
         
-        # P/B relative to ROE (Montgomery's value approach)
+        # P/B relative to ROE (value approach)
         if roe > 0 and pb > 0:
             pb_roe_ratio = pb / (roe / 10)  # Normalize ROE to compare with P/B
             if pb_roe_ratio < 1.5:
@@ -762,8 +762,8 @@ class MontgomeryValueScorer:
         if data:
             metrics = self.calculate_metrics(data)
             if metrics:
-                score = self.calculate_montgomery_score(metrics)
-                metrics['Montgomery Score'] = score
+                score = self.calculate_quality_score(metrics)
+                metrics['Quality Score'] = score
 
                 # Determine quality rating based on score
                 if score >= 80:
@@ -849,16 +849,16 @@ class MontgomeryValueScorer:
             print(f"Merging {len(df)} new results with {len(self.existing_results)} existing results...")
             df = pd.concat([self.existing_results, df], ignore_index=True)
 
-        # Sort by Montgomery Score (important after merging)
-        if 'Montgomery Score' in df.columns:
-            df = df.sort_values('Montgomery Score', ascending=False)
+        # Sort by Quality Score (important after merging)
+        if 'Quality Score' in df.columns:
+            df = df.sort_values('Quality Score', ascending=False)
 
         wb = Workbook()
         ws = wb.active
         ws.title = "Value Investment Analysis"
         
         # Add title
-        ws['A1'] = "Montgomery Value Investment Analysis"
+        ws['A1'] = "Value Investment Analysis"
         ws['A1'].font = Font(size=16, bold=True)
         ws['A2'] = f"Analysis Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
         ws['A2'].font = Font(size=10, italic=True)
@@ -894,8 +894,8 @@ class MontgomeryValueScorer:
                     else:
                         cell.number_format = '#,##0.00'
                 
-                # Apply conditional formatting for Montgomery Score
-                if header == 'Montgomery Score':
+                # Apply conditional formatting for Quality Score
+                if header == 'Quality Score':
                     if value >= 70:
                         cell.fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
                         cell.font = Font(color="006100")
@@ -985,7 +985,7 @@ class MontgomeryValueScorer:
         ws2 = wb.create_sheet("Scoring Methodology")
         
         methodology = [
-            ["Montgomery Value Scoring Methodology", "", ""],
+            ["Value Scoring Methodology", "", ""],
             ["", "", ""],
             ["Component", "Weight", "Criteria"],
             ["Return on Equity (ROE)", "30%", "≥20%: 30pts, ≥15%: 25pts, ≥10%: 15pts"],
@@ -1039,7 +1039,7 @@ class MontgomeryValueScorer:
         ws2.column_dimensions['B'].width = 15
         ws2.column_dimensions['C'].width = 50
         
-        # Sort main sheet by Montgomery Score (descending)
+        # Sort main sheet by Quality Score (descending)
         ws.auto_filter.ref = ws.dimensions
         
         wb.save(output_file)
@@ -1048,8 +1048,8 @@ class MontgomeryValueScorer:
         # Print top stocks
         if not df.empty:
             print("\n" + "="*80)
-            top_stocks = df.nlargest(5, 'Montgomery Score')[['Ticker', 'Company Name', 'Montgomery Score', 'Quality Rating', 'ROE (%)', 'Debt to Equity']]
-            print("\nTop 5 Stocks by Montgomery Score:")
+            top_stocks = df.nlargest(5, 'Quality Score')[['Ticker', 'Company Name', 'Quality Score', 'Quality Rating', 'ROE (%)', 'Debt to Equity']]
+            print("\nTop 5 Stocks by Quality Score:")
             print(top_stocks.to_string(index=False))
 
             # Print top stocks by upside potential
@@ -1057,21 +1057,21 @@ class MontgomeryValueScorer:
                 print("\n" + "="*80)
                 # Filter for positive upside and sort
                 upside_stocks = df[df['Upside Potential (%)'] > 0].nlargest(5, 'Upside Potential (%)')[
-                    ['Ticker', 'Company Name', 'Current Price', 'Avg Intrinsic Value', 'Upside Potential (%)', 'Value Rating', 'Montgomery Score']
+                    ['Ticker', 'Company Name', 'Current Price', 'Avg Intrinsic Value', 'Upside Potential (%)', 'Value Rating', 'Quality Score']
                 ]
                 if not upside_stocks.empty:
                     print("\nTop 5 Stocks by Upside Potential (Highest Payout Opportunity):")
                     print(upside_stocks.to_string(index=False))
 
             # Print best value opportunities (high upside + high quality score)
-            if 'Upside Potential (%)' in df.columns and 'Montgomery Score' in df.columns:
+            if 'Upside Potential (%)' in df.columns and 'Quality Score' in df.columns:
                 print("\n" + "="*80)
                 # Create a combined value score: stocks with >20% upside and >50 quality score
-                value_opps = df[(df['Upside Potential (%)'] > 20) & (df['Montgomery Score'] >= 50)].copy()
+                value_opps = df[(df['Upside Potential (%)'] > 20) & (df['Quality Score'] >= 50)].copy()
                 if not value_opps.empty:
                     # Sort by upside potential
                     value_opps = value_opps.nlargest(5, 'Upside Potential (%)')[
-                        ['Ticker', 'Company Name', 'Current Price', 'Avg Intrinsic Value', 'Upside Potential (%)', 'Montgomery Score', 'Quality Rating']
+                        ['Ticker', 'Company Name', 'Current Price', 'Avg Intrinsic Value', 'Upside Potential (%)', 'Quality Score', 'Quality Rating']
                     ]
                     print("\nBest Value Opportunities (High Quality + High Upside):")
                     print(value_opps.to_string(index=False))
@@ -1080,7 +1080,7 @@ class MontgomeryValueScorer:
             print("="*80)
 
 def main():
-    parser = argparse.ArgumentParser(description='Value Investment Stock Scorer (Montgomery Method)')
+    parser = argparse.ArgumentParser(description='Value Investment Stock Scorer')
     parser.add_argument('ticker_file', help='Text file containing stock tickers (one per line)')
     parser.add_argument('-o', '--output', default='value_investment_analysis.xlsx',
                        help='Output Excel file name (default: value_investment_analysis.xlsx)')
@@ -1104,7 +1104,7 @@ def main():
     args = parser.parse_args()
 
     # Initialize scorer with cache settings
-    scorer = MontgomeryValueScorer(
+    scorer = ValueScorer(
         cache_dir=args.cache_dir,
         cache_expiry_hours=args.cache_expiry,
         use_cache=not args.no_cache
@@ -1154,7 +1154,7 @@ def main():
     else:
         print("Starting fresh analysis (--fresh flag used)")
 
-    print(f"\nAnalyzing stocks using Montgomery Value methodology...")
+    print(f"\nAnalyzing stocks using Value methodology...")
     print("=" * 60)
 
     results_df = scorer.process_tickers(tickers, workers=args.workers)
@@ -1169,9 +1169,9 @@ def main():
         print(f"Total tickers in {args.output}: {len(scorer.existing_results)}")
         sys.exit(0)
 
-    # Sort by Montgomery Score (will be done after merging in create_excel_report)
+    # Sort by Quality Score (will be done after merging in create_excel_report)
     if not results_df.empty:
-        results_df = results_df.sort_values('Montgomery Score', ascending=False)
+        results_df = results_df.sort_values('Quality Score', ascending=False)
 
     # Create Excel report (this will merge with existing results if any)
     scorer.create_excel_report(results_df, args.output)
