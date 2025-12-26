@@ -840,7 +840,442 @@ class ValueScorer:
                         print(f"Error processing {ticker}: {e}")
 
         return pd.DataFrame(results)
-    
+
+    def calculate_historical_metrics(self, data, years_ago=3):
+        """Calculate metrics using historical financial data from N years ago"""
+        if not data:
+            return None
+
+        info = data['info']
+        ticker = data['ticker']
+
+        # Get historical financial statements
+        income_stmt = data['income_stmt']
+        balance_sheet = data['balance_sheet']
+        cash_flow = data['cash_flow']
+
+        # Find the column index for data from N years ago
+        # Financial statements are ordered newest to oldest
+        if income_stmt.empty or len(income_stmt.columns) <= years_ago:
+            return None
+
+        try:
+            # Get the historical column (years_ago index)
+            hist_col = income_stmt.columns[years_ago]
+            prior_col = income_stmt.columns[years_ago + 1] if len(income_stmt.columns) > years_ago + 1 else None
+
+            metrics = {'Ticker': ticker}
+            metrics['Company Name'] = info.get('longName', 'N/A')
+            metrics['Sector'] = info.get('sector', 'N/A')
+
+            # Get historical revenue
+            if 'Total Revenue' in income_stmt.index:
+                hist_revenue = income_stmt.loc['Total Revenue', hist_col]
+                metrics['Historical Revenue (B)'] = hist_revenue / 1e9 if not pd.isna(hist_revenue) else 0
+
+                # Calculate historical revenue growth
+                if prior_col is not None and 'Total Revenue' in income_stmt.index:
+                    prior_revenue = income_stmt.loc['Total Revenue', prior_col]
+                    if prior_revenue > 0 and not pd.isna(prior_revenue) and not pd.isna(hist_revenue):
+                        metrics['Historical Revenue Growth (%)'] = ((hist_revenue - prior_revenue) / prior_revenue) * 100
+                    else:
+                        metrics['Historical Revenue Growth (%)'] = 0
+                else:
+                    metrics['Historical Revenue Growth (%)'] = 0
+            else:
+                metrics['Historical Revenue (B)'] = 0
+                metrics['Historical Revenue Growth (%)'] = 0
+
+            # Get historical net income and equity for ROE
+            hist_net_income = 0
+            hist_equity = 0
+
+            if 'Net Income' in income_stmt.index:
+                hist_net_income = income_stmt.loc['Net Income', hist_col]
+                if pd.isna(hist_net_income):
+                    hist_net_income = 0
+
+            if not balance_sheet.empty and 'Stockholders Equity' in balance_sheet.index:
+                if hist_col in balance_sheet.columns:
+                    hist_equity = balance_sheet.loc['Stockholders Equity', hist_col]
+                elif len(balance_sheet.columns) > years_ago:
+                    hist_equity = balance_sheet.loc['Stockholders Equity', balance_sheet.columns[years_ago]]
+                if pd.isna(hist_equity):
+                    hist_equity = 0
+
+            # Calculate historical ROE
+            if hist_equity > 0:
+                metrics['Historical ROE (%)'] = (hist_net_income / hist_equity) * 100
+            else:
+                metrics['Historical ROE (%)'] = 0
+
+            # Get historical debt
+            hist_debt = 0
+            if not balance_sheet.empty:
+                if hist_col in balance_sheet.columns:
+                    bs_col = hist_col
+                elif len(balance_sheet.columns) > years_ago:
+                    bs_col = balance_sheet.columns[years_ago]
+                else:
+                    bs_col = None
+
+                if bs_col is not None:
+                    if 'Total Debt' in balance_sheet.index:
+                        hist_debt = balance_sheet.loc['Total Debt', bs_col]
+                    elif 'Long Term Debt' in balance_sheet.index:
+                        hist_debt = balance_sheet.loc['Long Term Debt', bs_col]
+                    if pd.isna(hist_debt):
+                        hist_debt = 0
+
+            # Calculate historical D/E
+            if hist_equity > 0:
+                metrics['Historical D/E'] = hist_debt / hist_equity
+            else:
+                metrics['Historical D/E'] = 999
+
+            # Get historical free cash flow
+            hist_fcf = 0
+            if not cash_flow.empty and 'Free Cash Flow' in cash_flow.index:
+                if hist_col in cash_flow.columns:
+                    hist_fcf = cash_flow.loc['Free Cash Flow', hist_col]
+                elif len(cash_flow.columns) > years_ago:
+                    hist_fcf = cash_flow.loc['Free Cash Flow', cash_flow.columns[years_ago]]
+                if pd.isna(hist_fcf):
+                    hist_fcf = 0
+            metrics['Historical FCF (B)'] = hist_fcf / 1e9
+
+            # Get historical net margin
+            if metrics['Historical Revenue (B)'] > 0:
+                metrics['Historical Net Margin (%)'] = (hist_net_income / (metrics['Historical Revenue (B)'] * 1e9)) * 100
+            else:
+                metrics['Historical Net Margin (%)'] = 0
+
+            # Calculate a simplified historical Quality Score
+            score = 0
+
+            # ROE component (30 pts)
+            roe = metrics['Historical ROE (%)']
+            if roe >= 20:
+                score += 30
+            elif roe >= 15:
+                score += 25
+            elif roe >= 10:
+                score += 15
+            elif roe >= 5:
+                score += 5
+
+            # Debt component (25 pts)
+            de = metrics['Historical D/E']
+            if de == 0:
+                score += 25
+            elif de < 0.3:
+                score += 20
+            elif de < 0.5:
+                score += 15
+            elif de < 1.0:
+                score += 8
+
+            # FCF component (20 pts) - simplified
+            if hist_fcf > 0:
+                score += 15  # Positive FCF gets points
+
+            # Margin component (10 pts)
+            margin = metrics['Historical Net Margin (%)']
+            if margin >= 15:
+                score += 10
+            elif margin >= 10:
+                score += 7
+            elif margin >= 5:
+                score += 4
+
+            # Revenue growth component (15 pts)
+            rev_growth = metrics['Historical Revenue Growth (%)']
+            if rev_growth >= 15:
+                score += 15
+            elif rev_growth >= 10:
+                score += 12
+            elif rev_growth >= 5:
+                score += 8
+            elif rev_growth >= 0:
+                score += 4
+
+            metrics['Historical Quality Score'] = min(100, score)
+
+            # Determine quality rating
+            if score >= 80:
+                metrics['Historical Quality Rating'] = 'A+'
+            elif score >= 70:
+                metrics['Historical Quality Rating'] = 'A'
+            elif score >= 60:
+                metrics['Historical Quality Rating'] = 'B+'
+            elif score >= 50:
+                metrics['Historical Quality Rating'] = 'B'
+            elif score >= 40:
+                metrics['Historical Quality Rating'] = 'C+'
+            elif score >= 30:
+                metrics['Historical Quality Rating'] = 'C'
+            else:
+                metrics['Historical Quality Rating'] = 'D'
+
+            return metrics
+
+        except Exception as e:
+            print(f"  Error calculating historical metrics for {ticker}: {e}")
+            return None
+
+    def get_historical_prices(self, ticker, years_ago=3):
+        """Get stock price from N years ago and current price"""
+        try:
+            stock = yf.Ticker(ticker)
+
+            # Get historical price from N years ago
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=years_ago * 365 + 30)  # Extra days for buffer
+
+            hist = stock.history(start=start_date, end=end_date)
+
+            if hist.empty:
+                return None, None, None
+
+            # Get price from approximately N years ago (first available in range)
+            target_date = end_date - timedelta(days=years_ago * 365)
+
+            # Find closest date to target
+            hist_prices = hist[hist.index <= target_date.strftime('%Y-%m-%d')]
+            if hist_prices.empty:
+                # Try getting earliest available price
+                hist_prices = hist.head(30)
+
+            if hist_prices.empty:
+                return None, None, None
+
+            historical_price = hist_prices['Close'].iloc[-1]
+            historical_date = hist_prices.index[-1]
+
+            # Get current price
+            current_price = hist['Close'].iloc[-1]
+
+            return historical_price, current_price, historical_date
+
+        except Exception as e:
+            print(f"  Error getting prices for {ticker}: {e}")
+            return None, None, None
+
+    def run_backtest(self, tickers, years_ago=3, benchmark_ticker='SPY'):
+        """Run backtest on a list of tickers"""
+        print(f"\n{'='*70}")
+        print(f"BACKTEST ANALYSIS - {years_ago} Year Lookback")
+        print(f"{'='*70}")
+
+        results = []
+
+        # Get benchmark returns
+        print(f"\nFetching benchmark ({benchmark_ticker}) data...")
+        bench_hist_price, bench_curr_price, bench_date = self.get_historical_prices(benchmark_ticker, years_ago)
+        if bench_hist_price and bench_curr_price:
+            benchmark_return = ((bench_curr_price - bench_hist_price) / bench_hist_price) * 100
+            print(f"  {benchmark_ticker}: ${bench_hist_price:.2f} → ${bench_curr_price:.2f} ({benchmark_return:+.1f}%)")
+        else:
+            benchmark_return = 0
+            print(f"  Warning: Could not get benchmark data, using 0% as benchmark")
+
+        print(f"\nAnalyzing {len(tickers)} stocks...")
+        print("-" * 70)
+
+        for ticker in tickers:
+            ticker = ticker.strip().upper()
+            if not ticker:
+                continue
+
+            print(f"Processing {ticker}...")
+
+            # Fetch stock data
+            data = self.fetch_stock_data(ticker)
+            if not data:
+                print(f"  Skipping {ticker}: Could not fetch data")
+                continue
+
+            # Calculate historical metrics
+            hist_metrics = self.calculate_historical_metrics(data, years_ago)
+            if not hist_metrics:
+                print(f"  Skipping {ticker}: Insufficient historical data")
+                continue
+
+            # Get price performance
+            hist_price, curr_price, price_date = self.get_historical_prices(ticker, years_ago)
+            if not hist_price or not curr_price:
+                print(f"  Skipping {ticker}: Could not get price history")
+                continue
+
+            # Calculate returns
+            total_return = ((curr_price - hist_price) / hist_price) * 100
+            alpha = total_return - benchmark_return
+
+            # Compile results
+            result = {
+                'Ticker': ticker,
+                'Company Name': hist_metrics.get('Company Name', 'N/A'),
+                'Sector': hist_metrics.get('Sector', 'N/A'),
+                'Historical Quality Score': hist_metrics.get('Historical Quality Score', 0),
+                'Historical Quality Rating': hist_metrics.get('Historical Quality Rating', 'N/A'),
+                'Historical ROE (%)': hist_metrics.get('Historical ROE (%)', 0),
+                'Historical D/E': hist_metrics.get('Historical D/E', 0),
+                'Historical Revenue Growth (%)': hist_metrics.get('Historical Revenue Growth (%)', 0),
+                'Price Then': hist_price,
+                'Price Now': curr_price,
+                'Total Return (%)': total_return,
+                'Benchmark Return (%)': benchmark_return,
+                'Alpha (%)': alpha,
+                'Beat Benchmark': 'Yes' if alpha > 0 else 'No'
+            }
+
+            results.append(result)
+            print(f"  Score: {result['Historical Quality Score']} ({result['Historical Quality Rating']}) | "
+                  f"Return: {total_return:+.1f}% | Alpha: {alpha:+.1f}%")
+
+        if not results:
+            print("\nNo valid results for backtest")
+            return pd.DataFrame()
+
+        df = pd.DataFrame(results)
+
+        # Print summary statistics
+        self._print_backtest_summary(df, benchmark_return, years_ago)
+
+        return df
+
+    def _print_backtest_summary(self, df, benchmark_return, years_ago):
+        """Print backtest summary statistics"""
+        print(f"\n{'='*70}")
+        print("BACKTEST SUMMARY")
+        print(f"{'='*70}")
+
+        print(f"\nOverall Statistics ({len(df)} stocks analyzed):")
+        print(f"  Average Return: {df['Total Return (%)'].mean():+.1f}%")
+        print(f"  Median Return: {df['Total Return (%)'].median():+.1f}%")
+        print(f"  Benchmark Return: {benchmark_return:+.1f}%")
+        print(f"  Average Alpha: {df['Alpha (%)'].mean():+.1f}%")
+        print(f"  Win Rate (beat benchmark): {(df['Alpha (%)'] > 0).sum()}/{len(df)} ({(df['Alpha (%)'] > 0).mean()*100:.1f}%)")
+
+        # Performance by Quality Rating
+        print(f"\nPerformance by Historical Quality Rating:")
+        print("-" * 50)
+        for rating in ['A+', 'A', 'B+', 'B', 'C+', 'C', 'D']:
+            rating_df = df[df['Historical Quality Rating'] == rating]
+            if len(rating_df) > 0:
+                avg_return = rating_df['Total Return (%)'].mean()
+                avg_alpha = rating_df['Alpha (%)'].mean()
+                win_rate = (rating_df['Alpha (%)'] > 0).mean() * 100
+                print(f"  {rating:3s}: {len(rating_df):3d} stocks | Avg Return: {avg_return:+7.1f}% | "
+                      f"Avg Alpha: {avg_alpha:+7.1f}% | Win Rate: {win_rate:5.1f}%")
+
+        # Top performers
+        print(f"\nTop 5 Performers:")
+        print("-" * 50)
+        top5 = df.nlargest(5, 'Total Return (%)')
+        for _, row in top5.iterrows():
+            print(f"  {row['Ticker']:6s} ({row['Historical Quality Rating']:2s}): {row['Total Return (%)']:+7.1f}% return, {row['Alpha (%)']:+7.1f}% alpha")
+
+        # Worst performers
+        print(f"\nBottom 5 Performers:")
+        print("-" * 50)
+        bottom5 = df.nsmallest(5, 'Total Return (%)')
+        for _, row in bottom5.iterrows():
+            print(f"  {row['Ticker']:6s} ({row['Historical Quality Rating']:2s}): {row['Total Return (%)']:+7.1f}% return, {row['Alpha (%)']:+7.1f}% alpha")
+
+        # Key insight
+        high_quality = df[df['Historical Quality Score'] >= 60]
+        low_quality = df[df['Historical Quality Score'] < 40]
+
+        print(f"\n{'='*70}")
+        print("KEY INSIGHT")
+        print(f"{'='*70}")
+        if len(high_quality) > 0 and len(low_quality) > 0:
+            hq_return = high_quality['Total Return (%)'].mean()
+            lq_return = low_quality['Total Return (%)'].mean()
+            diff = hq_return - lq_return
+            print(f"  High Quality (Score ≥60): {len(high_quality)} stocks, Avg Return: {hq_return:+.1f}%")
+            print(f"  Low Quality (Score <40):  {len(low_quality)} stocks, Avg Return: {lq_return:+.1f}%")
+            print(f"  Quality Premium: {diff:+.1f}% ({'High quality outperformed' if diff > 0 else 'Low quality outperformed'})")
+        else:
+            print("  Insufficient data for quality comparison")
+
+    def create_backtest_report(self, df, output_file, years_ago=3):
+        """Create Excel report for backtest results"""
+        if df.empty:
+            print("No data for backtest report")
+            return
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Backtest Results"
+
+        # Add title
+        ws['A1'] = f"Value Scorer Backtest Analysis - {years_ago} Year Lookback"
+        ws['A1'].font = Font(size=16, bold=True)
+        ws['A2'] = f"Analysis Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        ws['A2'].font = Font(size=10, italic=True)
+
+        # Add headers starting from row 4
+        headers = list(df.columns)
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(row=4, column=col, value=header)
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+
+        # Add data with conditional formatting
+        for row_idx, row in enumerate(df.itertuples(index=False), 5):
+            for col_idx, value in enumerate(row, 1):
+                cell = ws.cell(row=row_idx, column=col_idx, value=value)
+                header = headers[col_idx - 1]
+
+                # Format numbers
+                if isinstance(value, (int, float)) and not pd.isna(value):
+                    if 'Price' in header:
+                        cell.number_format = '$#,##0.00'
+                    elif '%' in header:
+                        cell.number_format = '0.00'
+
+                # Color code returns
+                if header == 'Total Return (%)' and isinstance(value, (int, float)):
+                    if value >= 50:
+                        cell.fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+                    elif value < 0:
+                        cell.fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+
+                # Color code alpha
+                if header == 'Alpha (%)' and isinstance(value, (int, float)):
+                    if value > 0:
+                        cell.font = Font(color="006100", bold=True)
+                    else:
+                        cell.font = Font(color="9C0006")
+
+                # Color code quality rating
+                if header == 'Historical Quality Rating':
+                    if value in ['A+', 'A']:
+                        cell.fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+                    elif value in ['D']:
+                        cell.fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+
+        # Adjust column widths
+        for col in ws.columns:
+            max_length = 0
+            column = col[0].column_letter
+            for cell in col:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except (TypeError, AttributeError):
+                    pass
+            ws.column_dimensions[column].width = min(max_length + 2, 30)
+
+        # Sort by Quality Score descending
+        ws.auto_filter.ref = ws.dimensions
+
+        wb.save(output_file)
+        print(f"\nBacktest report saved to: {output_file}")
+
     def create_excel_report(self, df, output_file):
         """Create formatted Excel report with color coding"""
 
@@ -1101,6 +1536,14 @@ def main():
     parser.add_argument('--cache-stats', action='store_true',
                        help='Show cache statistics and exit')
 
+    # Backtest arguments
+    parser.add_argument('--backtest', action='store_true',
+                       help='Run backtest analysis instead of current scoring')
+    parser.add_argument('--years', type=int, default=3,
+                       help='Number of years to look back for backtest (default: 3)')
+    parser.add_argument('--benchmark', type=str, default='SPY',
+                       help='Benchmark ticker for comparison (default: SPY)')
+
     args = parser.parse_args()
 
     # Initialize scorer with cache settings
@@ -1146,6 +1589,19 @@ def main():
     else:
         print("Cache: disabled")
     print("=" * 60)
+
+    # Handle backtest mode
+    if args.backtest:
+        print(f"\nRunning {args.years}-year backtest with {args.benchmark} benchmark...")
+
+        backtest_df = scorer.run_backtest(tickers, years_ago=args.years, benchmark_ticker=args.benchmark)
+
+        if not backtest_df.empty:
+            # Generate output filename for backtest
+            backtest_output = args.output.replace('.xlsx', f'_backtest_{args.years}y.xlsx')
+            scorer.create_backtest_report(backtest_df, backtest_output, years_ago=args.years)
+
+        sys.exit(0)
 
     # Load existing results if output file exists (for resume functionality)
     # Skip if --fresh flag is used
