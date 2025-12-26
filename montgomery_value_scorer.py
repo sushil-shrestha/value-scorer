@@ -15,21 +15,140 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils.dataframe import dataframe_to_rows
 import argparse
 import sys
-from datetime import datetime
+import os
+import json
+import pickle
+import time
+from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import warnings
 warnings.filterwarnings('ignore')
+
+# Default cache settings
+DEFAULT_CACHE_DIR = os.path.expanduser("~/.montgomery_cache")
+DEFAULT_CACHE_EXPIRY_HOURS = 24
 
 class MontgomeryValueScorer:
     """
     Implements Roger Montgomery's value investing scoring methodology
     Focus on high ROE, low debt, consistent earnings, and attractive valuations
     """
-    
-    def __init__(self):
+
+    def __init__(self, cache_dir=None, cache_expiry_hours=None, use_cache=True):
         self.scores = {}
         self.raw_data = {}
         self.existing_results = None
+
+        # Cache settings
+        self.use_cache = use_cache
+        self.cache_dir = cache_dir or DEFAULT_CACHE_DIR
+        self.cache_expiry_hours = cache_expiry_hours or DEFAULT_CACHE_EXPIRY_HOURS
+
+        # Create cache directory if it doesn't exist
+        if self.use_cache:
+            os.makedirs(self.cache_dir, exist_ok=True)
+
+    def _get_cache_path(self, ticker):
+        """Get the cache file path for a ticker"""
+        return os.path.join(self.cache_dir, f"{ticker.upper()}.pkl")
+
+    def _is_cache_valid(self, cache_path):
+        """Check if cache file exists and is not expired"""
+        if not os.path.exists(cache_path):
+            return False
+
+        # Check file modification time
+        file_mtime = datetime.fromtimestamp(os.path.getmtime(cache_path))
+        expiry_time = datetime.now() - timedelta(hours=self.cache_expiry_hours)
+
+        return file_mtime > expiry_time
+
+    def _load_from_cache(self, ticker):
+        """Load stock data from cache"""
+        cache_path = self._get_cache_path(ticker)
+
+        if not self._is_cache_valid(cache_path):
+            return None
+
+        try:
+            with open(cache_path, 'rb') as f:
+                data = pickle.load(f)
+            return data
+        except Exception as e:
+            print(f"  Cache read error for {ticker}: {e}")
+            return None
+
+    def _save_to_cache(self, ticker, data):
+        """Save stock data to cache"""
+        if not self.use_cache:
+            return
+
+        cache_path = self._get_cache_path(ticker)
+
+        try:
+            # Convert DataFrames to dictionaries for pickling
+            cache_data = {
+                'ticker': data['ticker'],
+                'info': data['info'],
+                'income_stmt': data['income_stmt'].to_dict() if not data['income_stmt'].empty else {},
+                'balance_sheet': data['balance_sheet'].to_dict() if not data['balance_sheet'].empty else {},
+                'cash_flow': data['cash_flow'].to_dict() if not data['cash_flow'].empty else {},
+                'history': data['history'].to_dict() if not data['history'].empty else {},
+                'cached_at': datetime.now().isoformat()
+            }
+
+            with open(cache_path, 'wb') as f:
+                pickle.dump(cache_data, f)
+        except Exception as e:
+            print(f"  Cache write error for {ticker}: {e}")
+
+    def _restore_from_cache(self, cache_data):
+        """Restore data from cache format to usable format"""
+        return {
+            'ticker': cache_data['ticker'],
+            'info': cache_data['info'],
+            'income_stmt': pd.DataFrame(cache_data['income_stmt']) if cache_data['income_stmt'] else pd.DataFrame(),
+            'balance_sheet': pd.DataFrame(cache_data['balance_sheet']) if cache_data['balance_sheet'] else pd.DataFrame(),
+            'cash_flow': pd.DataFrame(cache_data['cash_flow']) if cache_data['cash_flow'] else pd.DataFrame(),
+            'history': pd.DataFrame(cache_data['history']) if cache_data['history'] else pd.DataFrame()
+        }
+
+    def clear_cache(self, ticker=None):
+        """Clear cache for a specific ticker or all tickers"""
+        if ticker:
+            cache_path = self._get_cache_path(ticker)
+            if os.path.exists(cache_path):
+                os.remove(cache_path)
+                print(f"Cleared cache for {ticker}")
+        else:
+            # Clear all cache files
+            if os.path.exists(self.cache_dir):
+                count = 0
+                for f in os.listdir(self.cache_dir):
+                    if f.endswith('.pkl'):
+                        os.remove(os.path.join(self.cache_dir, f))
+                        count += 1
+                print(f"Cleared {count} cached entries")
+
+    def get_cache_stats(self):
+        """Get cache statistics"""
+        if not os.path.exists(self.cache_dir):
+            return {'total': 0, 'valid': 0, 'expired': 0}
+
+        total = 0
+        valid = 0
+        expired = 0
+
+        for f in os.listdir(self.cache_dir):
+            if f.endswith('.pkl'):
+                total += 1
+                cache_path = os.path.join(self.cache_dir, f)
+                if self._is_cache_valid(cache_path):
+                    valid += 1
+                else:
+                    expired += 1
+
+        return {'total': total, 'valid': valid, 'expired': expired}
 
     def load_existing_results(self, output_file):
         """Load existing results from Excel file for resume functionality"""
@@ -56,31 +175,71 @@ class MontgomeryValueScorer:
             print("Starting fresh analysis.")
             return None
 
-    def fetch_stock_data(self, ticker):
-        """Fetch comprehensive financial data for a stock"""
-        try:
-            stock = yf.Ticker(ticker)
-            info = stock.info
-            
-            # Get financial statements
-            income_stmt = stock.income_stmt
-            balance_sheet = stock.balance_sheet
-            cash_flow = stock.cash_flow
-            
-            # Historical data for volatility and consistency
-            hist = stock.history(period="5y")
-            
-            return {
-                'ticker': ticker,
-                'info': info,
-                'income_stmt': income_stmt,
-                'balance_sheet': balance_sheet,
-                'cash_flow': cash_flow,
-                'history': hist
-            }
-        except Exception as e:
-            print(f"Error fetching {ticker}: {e}")
-            return None
+    def fetch_stock_data(self, ticker, max_retries=3, retry_delay=5):
+        """Fetch comprehensive financial data for a stock with caching and retry logic"""
+
+        # Try to load from cache first
+        if self.use_cache:
+            cached_data = self._load_from_cache(ticker)
+            if cached_data:
+                print(f"  [CACHE HIT] {ticker}")
+                return self._restore_from_cache(cached_data)
+
+        # Fetch from yfinance with retry logic
+        for attempt in range(max_retries):
+            try:
+                stock = yf.Ticker(ticker)
+                info = stock.info
+
+                # Check for rate limit error in response
+                if not info or info.get('regularMarketPrice') is None:
+                    # Sometimes yfinance returns empty info on rate limit
+                    if attempt < max_retries - 1:
+                        wait_time = retry_delay * (2 ** attempt)  # Exponential backoff
+                        print(f"  [RETRY] {ticker} - Empty response, waiting {wait_time}s (attempt {attempt + 1}/{max_retries})")
+                        time.sleep(wait_time)
+                        continue
+
+                # Get financial statements
+                income_stmt = stock.income_stmt
+                balance_sheet = stock.balance_sheet
+                cash_flow = stock.cash_flow
+
+                # Historical data for volatility and consistency
+                hist = stock.history(period="5y")
+
+                data = {
+                    'ticker': ticker,
+                    'info': info,
+                    'income_stmt': income_stmt,
+                    'balance_sheet': balance_sheet,
+                    'cash_flow': cash_flow,
+                    'history': hist
+                }
+
+                # Save to cache
+                self._save_to_cache(ticker, data)
+
+                return data
+
+            except Exception as e:
+                error_msg = str(e).lower()
+
+                # Check for rate limit errors
+                if 'rate' in error_msg or 'limit' in error_msg or 'too many' in error_msg:
+                    if attempt < max_retries - 1:
+                        wait_time = retry_delay * (2 ** attempt)  # Exponential backoff
+                        print(f"  [RATE LIMITED] {ticker} - Waiting {wait_time}s (attempt {attempt + 1}/{max_retries})")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        print(f"  [FAILED] {ticker}: Rate limited after {max_retries} attempts")
+                        return None
+                else:
+                    print(f"  [ERROR] {ticker}: {e}")
+                    return None
+
+        return None
     
     def calculate_intrinsic_value_dcf(self, data, metrics):
         """
@@ -930,8 +1089,43 @@ def main():
     parser.add_argument('--fresh', action='store_true',
                        help='Start fresh analysis, ignoring any existing results file')
 
+    # Cache control arguments
+    parser.add_argument('--no-cache', action='store_true',
+                       help='Disable caching (fetch fresh data for all tickers)')
+    parser.add_argument('--clear-cache', action='store_true',
+                       help='Clear all cached data before running')
+    parser.add_argument('--cache-expiry', type=int, default=DEFAULT_CACHE_EXPIRY_HOURS,
+                       help=f'Cache expiry time in hours (default: {DEFAULT_CACHE_EXPIRY_HOURS})')
+    parser.add_argument('--cache-dir', type=str, default=DEFAULT_CACHE_DIR,
+                       help=f'Cache directory (default: {DEFAULT_CACHE_DIR})')
+    parser.add_argument('--cache-stats', action='store_true',
+                       help='Show cache statistics and exit')
+
     args = parser.parse_args()
-    
+
+    # Initialize scorer with cache settings
+    scorer = MontgomeryValueScorer(
+        cache_dir=args.cache_dir,
+        cache_expiry_hours=args.cache_expiry,
+        use_cache=not args.no_cache
+    )
+
+    # Handle cache-only commands
+    if args.cache_stats:
+        stats = scorer.get_cache_stats()
+        print(f"Cache directory: {args.cache_dir}")
+        print(f"Cache expiry: {args.cache_expiry} hours")
+        print(f"Total cached: {stats['total']}")
+        print(f"Valid (not expired): {stats['valid']}")
+        print(f"Expired: {stats['expired']}")
+        sys.exit(0)
+
+    if args.clear_cache:
+        scorer.clear_cache()
+        print("Cache cleared.")
+        if args.ticker_file == '--clear-cache':
+            sys.exit(0)
+
     # Read tickers from file
     try:
         with open(args.ticker_file, 'r') as f:
@@ -940,16 +1134,18 @@ def main():
     except FileNotFoundError:
         print(f"Error: File '{args.ticker_file}' not found")
         sys.exit(1)
-    
+
     if not tickers:
         print("Error: No tickers found in file")
         sys.exit(1)
-    
-    print(f"Found {len(tickers)} tickers in input file")
-    print("=" * 60)
 
-    # Process stocks
-    scorer = MontgomeryValueScorer()
+    print(f"Found {len(tickers)} tickers in input file")
+    if scorer.use_cache:
+        stats = scorer.get_cache_stats()
+        print(f"Cache: {stats['valid']} valid entries, {stats['expired']} expired (expiry: {args.cache_expiry}h)")
+    else:
+        print("Cache: disabled")
+    print("=" * 60)
 
     # Load existing results if output file exists (for resume functionality)
     # Skip if --fresh flag is used
