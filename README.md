@@ -1,175 +1,271 @@
-# Montgomery Value Investment Scorer
+# Value Scorer
 
-A Python-based stock analysis tool implementing Roger Montgomery's value investing methodology from his book "Value.able". This tool evaluates companies based on quality metrics with heavy emphasis on Return on Equity (ROE), debt levels, and free cash flow generation.
+A Python-based stock analysis tool for value investing. Evaluates companies based on quality metrics with emphasis on Return on Equity (ROE), debt levels, and free cash flow generation.
 
-## Overview
+## Features
 
-Roger Montgomery's approach focuses on finding high-quality businesses that can compound wealth over long periods. His methodology prioritizes:
-- **High and consistent ROE** (Return on Equity)
-- **Low or no debt** 
-- **Strong free cash flow generation**
-- **Reasonable valuations relative to quality**
+- **Quality Scoring** - Score stocks from 0-100 based on fundamental metrics
+- **Intrinsic Value Calculation** - DCF and Graham formula valuations
+- **Backtesting** - Validate the scoring methodology against historical data
+- **Caching** - Avoid rate limits with intelligent data caching
+- **Excel Reports** - Color-coded, sortable spreadsheets
 
-## Scoring Components
+## Quick Start
 
-The scoring system allocates 100 points across five key areas:
+```bash
+# Install dependencies
+pip install yfinance pandas openpyxl numpy
 
-### 1. Return on Equity (30 points)
-- Montgomery's primary quality metric
-- Measures management's ability to generate returns on shareholder equity
-- Scoring:
-  - ≥20% ROE: 30 points
-  - ≥15% ROE: 25 points
-  - ≥10% ROE: 15 points
-  - Bonus points for consistency (low standard deviation)
+# Create a ticker file
+echo -e "AAPL\nMSFT\nGOOG\nJNJ" > stocks.txt
 
-### 2. Debt Levels (25 points)
-- Montgomery strongly prefers companies with little to no debt
-- Debt-free companies have more flexibility during downturns
-- Scoring based on Debt-to-Equity ratio:
-  - 0 (debt-free): 25 points
-  - <0.1: 23 points
-  - <0.3: 20 points
-  - <0.5: 15 points
-
-### 3. Free Cash Flow (20 points)
-- Measures actual cash generation after capital expenditures
-- FCF Yield = Free Cash Flow / Market Cap
-- Scoring:
-  - ≥10% FCF Yield: 20 points
-  - ≥7% FCF Yield: 16 points
-  - ≥5% FCF Yield: 12 points
-
-### 4. Valuation (15 points)
-- P/E ratio component
-- P/B ratio relative to ROE (Montgomery's value approach)
-- Lower multiples for quality companies indicate better value
-
-### 5. Profitability (10 points)
-- Net profit margin
-- Operating margin
-- Higher margins indicate pricing power and efficiency
-
-## Quality Ratings
-
-Based on the total score:
-- **A+ (80-100)**: Exceptional quality, strong moat
-- **A (70-79)**: High quality, competitive advantages
-- **B+ (60-69)**: Good quality, above average
-- **B (50-59)**: Average quality, acceptable
-- **C+ (40-49)**: Below average, some concerns
-- **C (30-39)**: Poor quality, significant issues
-- **D (0-29)**: Very poor quality, avoid
+# Run analysis
+python value_scorer.py stocks.txt
+```
 
 ## Installation
 
 ```bash
-# Install required packages
-pip install yfinance pandas openpyxl numpy --break-system-packages
+# Clone the repository
+git clone https://github.com/sushil-shrestha/value-scorer.git
+cd value-scorer
+
+# (Optional) Create virtual environment
+python -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install yfinance pandas openpyxl numpy
 ```
 
 ## Usage
 
-### Basic Usage
-```bash
-# Create a text file with tickers (one per line)
-echo "AAPL
-MSFT
-BRK-B
-JNJ" > my_stocks.txt
+### Basic Analysis
 
-# Run the analysis
-python montgomery_value_scorer.py my_stocks.txt
+```bash
+# Analyze stocks from a file
+python value_scorer.py stocks.txt
+
+# Custom output file
+python value_scorer.py stocks.txt -o my_analysis.xlsx
+
+# Parallel processing (faster for many stocks)
+python value_scorer.py stocks.txt -w 4
 ```
 
-### Custom Output File
+### Backtesting
+
+Test how the scoring system would have performed historically:
+
 ```bash
-python montgomery_value_scorer.py my_stocks.txt -o my_analysis.xlsx
+# Run 3-year backtest (default)
+python value_scorer.py stocks.txt --backtest
+
+# Custom lookback period
+python value_scorer.py stocks.txt --backtest --years 2
+
+# Custom benchmark (default: SPY)
+python value_scorer.py stocks.txt --backtest --benchmark QQQ
+```
+
+### Cache Management
+
+The tool caches data to avoid Yahoo Finance rate limits:
+
+```bash
+# View cache statistics
+python value_scorer.py stocks.txt --cache-stats
+
+# Clear cache and fetch fresh data
+python value_scorer.py stocks.txt --clear-cache
+
+# Disable caching entirely
+python value_scorer.py stocks.txt --no-cache
+
+# Set custom cache expiry (hours)
+python value_scorer.py stocks.txt --cache-expiry 48
 ```
 
 ### Input File Format
-Create a text file with one ticker symbol per line:
+
+Create a text file with one ticker per line. Comments start with `#`:
+
 ```
+# Technology
 AAPL
 MSFT
 GOOGL
-BRK-B
+
+# Healthcare
 JNJ
+UNH
 ```
+
+## Scoring System
+
+### Quality Score (0-100)
+
+| Component | Weight | Description |
+|-----------|--------|-------------|
+| **ROE** | 30 pts | Return on Equity - management efficiency |
+| **Debt** | 25 pts | Debt-to-Equity ratio - financial risk |
+| **Cash Flow** | 20 pts | Free Cash Flow yield - cash generation |
+| **Valuation** | 15 pts | P/E and P/B ratios - price vs value |
+| **Profitability** | 10 pts | Net and operating margins |
+
+### Quality Ratings
+
+| Rating | Score | Interpretation |
+|--------|-------|----------------|
+| A+ | 80-100 | Exceptional quality |
+| A | 70-79 | High quality |
+| B+ | 60-69 | Above average |
+| B | 50-59 | Average |
+| C+ | 40-49 | Below average |
+| C | 30-39 | Poor quality |
+| D | 0-29 | Avoid |
+
+### Intrinsic Value Methods
+
+The tool calculates intrinsic value using two methods:
+
+1. **DCF (Discounted Cash Flow)**
+   - Projects free cash flow for 5 years
+   - Uses revenue growth as a constraint
+   - Adjusts discount rate for risk (debt, profitability)
+   - Conservative terminal value calculation
+
+2. **Graham Formula**
+   - `V = EPS × (8.5 + 2g)`
+   - Where g = expected growth rate (capped at 15%)
+   - Classic value investing approach
+
+### Value Ratings
+
+| Rating | Upside | Interpretation |
+|--------|--------|----------------|
+| Strong Buy | ≥50% | Significantly undervalued |
+| Buy | 25-50% | Attractive opportunity |
+| Hold | 10-25% | Moderate upside |
+| Fair Value | ±10% | Fairly priced |
+| Overvalued | <-10% | Above intrinsic value |
 
 ## Output
 
-The tool generates an Excel file with:
+### Excel Report
 
-### Sheet 1: Value Investment Analysis
-- All financial metrics for each stock
-- Montgomery Score (0-100)
-- Quality Rating (A+ to D)
-- Color-coded cells for easy visual analysis:
-  - Green: Excellent metrics
-  - Yellow: Average metrics
-  - Red: Poor metrics
+The tool generates a formatted Excel file with:
 
-### Sheet 2: Scoring Methodology
-- Detailed explanation of scoring components
-- Quality rating definitions
-- Key principles
+**Sheet 1: Value Investment Analysis**
+- All metrics for each stock
+- Quality Score and Rating
+- Intrinsic value calculations
+- Color-coded cells (green=good, red=concern)
 
-## Key Metrics Analyzed
+**Sheet 2: Scoring Methodology**
+- Detailed scoring criteria
+- Rating definitions
 
-- **ROE (%)**: Return on Equity
-- **5Y Avg ROE (%)**: 5-year average for consistency
-- **Debt to Equity**: Financial leverage
-- **Free Cash Flow**: Actual cash generation
-- **Net Margin (%)**: Profitability
-- **Operating Margin (%)**: Operational efficiency
-- **P/E Ratio**: Price to Earnings
-- **P/B Ratio**: Price to Book
-- **PEG Ratio**: Price/Earnings to Growth
-- **Dividend Yield**: Income component
-- **Payout Ratio**: Dividend sustainability
+### Backtest Report
+
+When running `--backtest`, you get:
+- Historical Quality Score for each stock
+- Actual price returns over the period
+- Alpha vs benchmark (SPY by default)
+- Performance breakdown by quality rating
+- Win rate statistics
+
+## Example Output
+
+```
+======================================================================
+BACKTEST SUMMARY
+======================================================================
+
+Overall Statistics (8 stocks analyzed):
+  Average Return: +96.7%
+  Benchmark Return: +87.6%
+  Average Alpha: +9.1%
+  Win Rate (beat benchmark): 4/8 (50.0%)
+
+Performance by Historical Quality Rating:
+--------------------------------------------------
+  A  :   3 stocks | Avg Return:  +130.6% | Win Rate:  66.7%
+  B  :   4 stocks | Avg Return:   +73.6% | Win Rate:  50.0%
+  D  :   1 stocks | Avg Return:   +87.4% | Win Rate:   0.0%
+
+KEY INSIGHT
+======================================================================
+  High Quality (Score ≥60): Avg Return: +130.6%
+  Low Quality (Score <40):  Avg Return: +87.4%
+  Quality Premium: +43.1% (High quality outperformed)
+```
+
+## CLI Reference
+
+```
+usage: value_scorer.py [-h] [-o OUTPUT] [-w WORKERS] [--fresh]
+                       [--no-cache] [--clear-cache] [--cache-expiry HOURS]
+                       [--cache-dir DIR] [--cache-stats]
+                       [--backtest] [--years N] [--benchmark TICKER]
+                       ticker_file
+
+Arguments:
+  ticker_file           Text file with stock tickers (one per line)
+
+Options:
+  -o, --output FILE     Output Excel file (default: value_investment_analysis.xlsx)
+  -w, --workers N       Parallel workers (default: 1)
+  --fresh               Ignore existing results, start fresh
+
+Cache Options:
+  --no-cache            Disable caching
+  --clear-cache         Clear cache before running
+  --cache-expiry HOURS  Cache expiry time (default: 24)
+  --cache-dir DIR       Cache directory (default: ~/.value_scorer_cache)
+  --cache-stats         Show cache statistics and exit
+
+Backtest Options:
+  --backtest            Run backtest analysis
+  --years N             Lookback period in years (default: 3)
+  --benchmark TICKER    Benchmark ticker (default: SPY)
+```
 
 ## Investment Philosophy
 
-Montgomery's approach aligns with Warren Buffett's principles:
-1. **Quality over everything**: High ROE indicates competitive advantages
-2. **Margin of Safety**: Buy quality companies at reasonable prices
-3. **Long-term focus**: Hold for 10-20+ years
-4. **Avoid debt-heavy companies**: Debt amplifies risk
-5. **Cash is king**: Free cash flow is the ultimate measure of value
+This tool is built on proven value investing principles:
 
-## Ideal Candidates for Long-term Investment
+1. **Quality First** - High ROE indicates competitive advantages
+2. **Avoid Debt** - Leverage amplifies risk in downturns
+3. **Cash is King** - Free cash flow is the true measure of value
+4. **Margin of Safety** - Buy below intrinsic value
+5. **Long-term Focus** - Quality compounds over decades
 
-Look for companies with:
-- Montgomery Score > 70
+### What to Look For
+
+Ideal investment candidates typically have:
+- Quality Score > 70
 - Consistent ROE above 15%
 - Debt/Equity < 0.5
-- Strong free cash flow generation
-- Reasonable valuations (P/E < 20 for quality companies)
-- Sustainable competitive advantages (moats)
+- Positive free cash flow
+- Trading below intrinsic value
 
 ## Limitations
 
-- Data quality depends on Yahoo Finance availability
-- Historical data may be limited for newer companies
-- Financial companies may need adjusted metrics
-- Cyclical companies may show misleading point-in-time metrics
+- Data quality depends on Yahoo Finance
+- Limited historical data for newer companies
+- Financial sector may need adjusted metrics
+- Cyclical companies show point-in-time snapshots
+- Backtesting has survivorship bias (only existing stocks)
 
-## Examples of High-Quality Companies
+## Contributing
 
-Historically high-scoring companies often include:
-- Consumer staples with strong brands (P&G, Coca-Cola)
-- Technology leaders with network effects (Microsoft, Apple)
-- Healthcare companies with patents (Johnson & Johnson)
-- Financial services with scale advantages (Berkshire Hathaway)
-
-## Further Reading
-
-- "Value.able" by Roger Montgomery
-- "The Intelligent Investor" by Benjamin Graham
-- "Common Stocks and Uncommon Profits" by Philip Fisher
-- Montgomery Investment Management website
+Contributions are welcome! Please feel free to submit issues or pull requests.
 
 ## Disclaimer
 
-This tool is for educational and research purposes only. Always conduct your own due diligence before making investment decisions. Past performance does not guarantee future results.
+This tool is for educational and research purposes only. It does not constitute financial advice. Always conduct your own due diligence before making investment decisions. Past performance does not guarantee future results.
+
+## License
+
+MIT License - see LICENSE file for details.
