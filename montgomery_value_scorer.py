@@ -92,23 +92,61 @@ class MontgomeryValueScorer:
             if fcf <= 0:
                 return None
 
-            # Get growth rate (use earnings growth, capped at reasonable levels)
-            growth_rate = metrics.get('Earnings Growth (%)', 0) / 100
-            # Conservative approach: cap growth at 15% and use 5-year average if available
-            growth_rate = min(growth_rate, 0.15) if growth_rate > 0 else 0.05
+            # Quality gate: Skip DCF for very low quality companies
+            roe = metrics.get('ROE (%)', 0)
+            if roe < -20:  # Severely negative ROE indicates distressed company
+                return None
 
-            # Discount rate (WACC approximation: 10% for stable companies, higher for riskier)
-            # Adjust based on debt levels
-            debt_to_equity = metrics.get('Debt to Equity', 0)
-            if debt_to_equity < 0.3:
-                discount_rate = 0.10  # Low risk
-            elif debt_to_equity < 1.0:
-                discount_rate = 0.12  # Moderate risk
+            # Get growth rates
+            earnings_growth = metrics.get('Earnings Growth (%)', 0) / 100
+            revenue_growth = metrics.get('Revenue Growth (%)', 0) / 100
+            revenue_cagr = metrics.get('Revenue CAGR 3Y (%)', 0) / 100
+
+            # FCF growth should be constrained by revenue growth
+            # A company can't sustainably grow FCF faster than revenue long-term
+            # Use the more conservative of revenue metrics
+            revenue_constraint = min(revenue_growth, revenue_cagr) if revenue_cagr != 0 else revenue_growth
+
+            # For declining revenue companies, use the decline rate (don't assume growth)
+            if revenue_constraint < 0:
+                # Revenue is declining - FCF will likely follow
+                growth_rate = max(revenue_constraint, -0.10)  # Cap decline at -10%
             else:
-                discount_rate = 0.15  # Higher risk
+                # Revenue is growing - use minimum of earnings growth and revenue growth
+                growth_rate = min(earnings_growth, revenue_constraint, 0.15)
+                if growth_rate <= 0:
+                    growth_rate = min(revenue_constraint, 0.05)  # Default to revenue growth or 5%
 
-            # Terminal growth rate (conservative long-term growth)
-            terminal_growth = 0.03
+            # Discount rate (WACC approximation)
+            # Base rate on debt levels AND profitability
+            debt_to_equity = metrics.get('Debt to Equity', 0)
+
+            # Start with debt-based rate
+            if debt_to_equity < 0.3:
+                discount_rate = 0.10  # Low debt risk
+            elif debt_to_equity < 1.0:
+                discount_rate = 0.12  # Moderate debt risk
+            elif debt_to_equity < 2.0:
+                discount_rate = 0.15  # High debt risk
+            else:
+                discount_rate = 0.18  # Very high debt risk
+
+            # Adjust for profitability risk
+            if roe < 0:
+                discount_rate += 0.03  # Add 3% for unprofitable companies
+            elif roe < 10:
+                discount_rate += 0.01  # Add 1% for low profitability
+
+            # Adjust for declining revenue
+            if revenue_constraint < -0.05:
+                discount_rate += 0.02  # Add 2% for significant revenue decline
+
+            # Terminal growth rate - should be conservative and below discount rate
+            # For declining companies, terminal growth should be lower or zero
+            if revenue_constraint < 0:
+                terminal_growth = 0.01  # 1% terminal growth for declining companies
+            else:
+                terminal_growth = 0.025  # 2.5% for stable/growing companies
 
             # Project FCF for 5 years
             projected_fcf = []
@@ -159,14 +197,27 @@ class MontgomeryValueScorer:
         """
         try:
             # Get EPS (trailing)
-            eps = metrics.get('info_eps', 0)  # We'll add this in calculate_metrics
+            eps = metrics.get('info_eps', 0)
             if eps <= 0:
                 return None
 
-            # Get growth rate (5-year expected, conservative)
-            growth_rate = metrics.get('Earnings Growth (%)', 0)
-            # Cap between 0-15% for conservatism (negative growth not valid for Graham formula)
-            growth_rate = max(0, min(growth_rate, 15))
+            # Get growth rates
+            earnings_growth = metrics.get('Earnings Growth (%)', 0)
+            revenue_growth = metrics.get('Revenue Growth (%)', 0)
+            revenue_cagr = metrics.get('Revenue CAGR 3Y (%)', 0)
+
+            # Use the more conservative revenue metric
+            revenue_constraint = min(revenue_growth, revenue_cagr) if revenue_cagr != 0 else revenue_growth
+
+            # For declining revenue companies, growth should be constrained
+            if revenue_constraint < 0:
+                # Declining revenue - use 0 growth (Graham's base case)
+                growth_rate = 0
+            else:
+                # Growing revenue - use minimum of earnings and revenue growth
+                growth_rate = min(earnings_growth, revenue_constraint)
+                # Cap between 0-15% for conservatism
+                growth_rate = max(0, min(growth_rate, 15))
 
             # Graham formula (simplified without bond yield adjustment)
             intrinsic_value = eps * (8.5 + 2 * growth_rate)
