@@ -120,6 +120,9 @@ class MontgomeryValueScorer:
 
             # Terminal value using perpetuity growth model
             terminal_fcf = current_fcf * (1 + terminal_growth)
+            # Guard against division by zero or invalid assumptions
+            if discount_rate <= terminal_growth:
+                return None
             terminal_value = terminal_fcf / (discount_rate - terminal_growth)
             discounted_terminal_value = terminal_value / ((1 + discount_rate) ** 5)
 
@@ -162,7 +165,8 @@ class MontgomeryValueScorer:
 
             # Get growth rate (5-year expected, conservative)
             growth_rate = metrics.get('Earnings Growth (%)', 0)
-            growth_rate = min(growth_rate, 15)  # Cap at 15% for conservatism
+            # Cap between 0-15% for conservatism (negative growth not valid for Graham formula)
+            growth_rate = max(0, min(growth_rate, 15))
 
             # Graham formula (simplified without bond yield adjustment)
             intrinsic_value = eps * (8.5 + 2 * growth_rate)
@@ -200,9 +204,15 @@ class MontgomeryValueScorer:
         total_equity = 0
         if not data['balance_sheet'].empty and 'Stockholders Equity' in data['balance_sheet'].index:
             total_equity = data['balance_sheet'].loc['Stockholders Equity'].iloc[0]
-        if total_equity == 0 or pd.isna(total_equity):
-            total_equity = 1  # Avoid division by zero
-        metrics['Debt to Equity'] = total_debt / total_equity if total_equity > 0 else 999
+            if pd.isna(total_equity):
+                total_equity = 0
+
+        # Handle missing or negative equity properly
+        if total_equity <= 0:
+            # No valid equity data or negative equity - indicates problematic financials
+            metrics['Debt to Equity'] = 999
+        else:
+            metrics['Debt to Equity'] = total_debt / total_equity
         
         # Cash and liquidity
         metrics['Total Cash (B)'] = info.get('totalCash', 0) / 1e9
@@ -214,7 +224,7 @@ class MontgomeryValueScorer:
                 total_revenue = data['income_stmt'].loc['Total Revenue'].iloc[0]
                 if pd.isna(total_revenue):
                     total_revenue = 0
-            except:
+            except (KeyError, IndexError, TypeError):
                 total_revenue = 0
         metrics['Total Revenue (B)'] = total_revenue / 1e9 if total_revenue else 0
 
@@ -226,7 +236,7 @@ class MontgomeryValueScorer:
                     fcf = data['cash_flow'].loc['Free Cash Flow'].iloc[0]
                     if pd.isna(fcf):
                         fcf = 0
-            except:
+            except (KeyError, IndexError, TypeError):
                 pass
         metrics['Free Cash Flow (B)'] = fcf / 1e9
         
@@ -242,15 +252,55 @@ class MontgomeryValueScorer:
                     revenue = data['income_stmt'].loc['Total Revenue'].iloc[0]
                     if revenue and revenue > 0 and not pd.isna(net_income) and not pd.isna(revenue):
                         net_margin = net_income / revenue
-            except:
+            except (KeyError, IndexError, TypeError):
                 pass
 
         metrics['Net Margin (%)'] = net_margin * 100 if net_margin else 0
         metrics['Operating Margin (%)'] = info.get('operatingMargins', 0) * 100 if info.get('operatingMargins') else 0
-        metrics['ROIC (%)'] = info.get('returnOnAssets', 0) * 100 if info.get('returnOnAssets') else 0
+        metrics['ROA (%)'] = info.get('returnOnAssets', 0) * 100 if info.get('returnOnAssets') else 0
         
-        # Growth metrics
-        metrics['Revenue Growth (%)'] = info.get('revenueGrowth', 0) * 100 if info.get('revenueGrowth') else 0
+        # Growth metrics - Calculate from income statement for accuracy
+        # Revenue growth from annual income statement (not quarterly yfinance metric)
+        revenue_growth_annual = 0
+        revenue_cagr_3y = 0
+        revenue_growth_consistency = 0
+
+        if not data['income_stmt'].empty and 'Total Revenue' in data['income_stmt'].index:
+            try:
+                revenues = data['income_stmt'].loc['Total Revenue'].dropna()
+                if len(revenues) >= 2:
+                    # Most recent YoY growth (year 0 vs year 1)
+                    rev_current = revenues.iloc[0]
+                    rev_prior = revenues.iloc[1]
+                    if rev_prior > 0:
+                        revenue_growth_annual = ((rev_current - rev_prior) / rev_prior) * 100
+
+                    # 3-year CAGR if we have enough data
+                    if len(revenues) >= 4:
+                        rev_3y_ago = revenues.iloc[3]
+                        if rev_3y_ago > 0 and rev_current > 0:
+                            revenue_cagr_3y = ((rev_current / rev_3y_ago) ** (1/3) - 1) * 100
+                    elif len(revenues) >= 3:
+                        # Use 2-year CAGR if only 3 years available
+                        rev_2y_ago = revenues.iloc[2]
+                        if rev_2y_ago > 0 and rev_current > 0:
+                            revenue_cagr_3y = ((rev_current / rev_2y_ago) ** (1/2) - 1) * 100
+
+                    # Revenue growth consistency (std dev of annual growth rates)
+                    if len(revenues) >= 3:
+                        growth_rates = []
+                        for i in range(len(revenues) - 1):
+                            if revenues.iloc[i+1] > 0:
+                                gr = ((revenues.iloc[i] - revenues.iloc[i+1]) / revenues.iloc[i+1]) * 100
+                                growth_rates.append(gr)
+                        if growth_rates:
+                            revenue_growth_consistency = np.std(growth_rates)
+            except (KeyError, IndexError, TypeError, ValueError):
+                pass
+
+        metrics['Revenue Growth (%)'] = revenue_growth_annual
+        metrics['Revenue CAGR 3Y (%)'] = revenue_cagr_3y
+        metrics['Revenue Growth Consistency'] = revenue_growth_consistency
         metrics['Earnings Growth (%)'] = info.get('earningsGrowth', 0) * 100 if info.get('earningsGrowth') else 0
         
         # Valuation metrics
@@ -261,6 +311,7 @@ class MontgomeryValueScorer:
         metrics['EV/EBITDA'] = info.get('enterpriseToEbitda', 0)
         
         # Dividend metrics
+        # Note: yfinance returns dividendYield already as percentage value (0.75 = 0.75%, 2.93 = 2.93%)
         metrics['Dividend Yield (%)'] = info.get('dividendYield', 0) if info.get('dividendYield') else 0
         metrics['Payout Ratio (%)'] = info.get('payoutRatio', 0) * 100 if info.get('payoutRatio') else 0
         
@@ -298,7 +349,7 @@ class MontgomeryValueScorer:
             else:
                 metrics['5Y Avg ROE (%)'] = metrics['ROE (%)']
                 metrics['ROE Consistency'] = 0
-        except:
+        except (KeyError, IndexError, TypeError, ValueError):
             metrics['5Y Avg ROE (%)'] = metrics['ROE (%)']
             metrics['ROE Consistency'] = 0
 
@@ -715,7 +766,7 @@ class MontgomeryValueScorer:
                 try:
                     if len(str(cell.value)) > max_length:
                         max_length = len(str(cell.value))
-                except:
+                except (TypeError, AttributeError):
                     pass
             adjusted_width = min(max_length + 2, 50)
             ws.column_dimensions[column].width = adjusted_width
@@ -825,13 +876,16 @@ def main():
                        help='Output Excel file name (default: value_investment_analysis.xlsx)')
     parser.add_argument('-w', '--workers', type=int, default=1,
                        help='Number of parallel workers for processing (default: 1, sequential)')
+    parser.add_argument('--fresh', action='store_true',
+                       help='Start fresh analysis, ignoring any existing results file')
 
     args = parser.parse_args()
     
     # Read tickers from file
     try:
         with open(args.ticker_file, 'r') as f:
-            tickers = [line.strip() for line in f if line.strip()]
+            # Filter out empty lines and comments (lines starting with #)
+            tickers = [line.strip() for line in f if line.strip() and not line.strip().startswith('#')]
     except FileNotFoundError:
         print(f"Error: File '{args.ticker_file}' not found")
         sys.exit(1)
@@ -847,7 +901,11 @@ def main():
     scorer = MontgomeryValueScorer()
 
     # Load existing results if output file exists (for resume functionality)
-    scorer.load_existing_results(args.output)
+    # Skip if --fresh flag is used
+    if not args.fresh:
+        scorer.load_existing_results(args.output)
+    else:
+        print("Starting fresh analysis (--fresh flag used)")
 
     print(f"\nAnalyzing stocks using Montgomery Value methodology...")
     print("=" * 60)
