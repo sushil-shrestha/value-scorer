@@ -1514,9 +1514,85 @@ class ValueScorer:
                     print("\nNo stocks found with both high quality (Score ≥50) and high upside (>20%)")
             print("="*80)
 
+def print_single_stock_analysis(metrics):
+    """Print detailed analysis of a single stock to console"""
+    if not metrics:
+        print("No data available for this stock")
+        return
+
+    print("\n" + "=" * 70)
+    print(f"  {metrics.get('Ticker', 'N/A')} - {metrics.get('Company Name', 'N/A')}")
+    print("=" * 70)
+
+    print(f"\n  Sector: {metrics.get('Sector', 'N/A')}")
+    print(f"  Industry: {metrics.get('Industry', 'N/A')}")
+
+    # Quality Score Section
+    print("\n" + "-" * 70)
+    score = metrics.get('Quality Score', 0)
+    rating = metrics.get('Quality Rating', 'N/A')
+    print(f"  QUALITY SCORE: {score:.0f}/100  ({rating})")
+    print("-" * 70)
+
+    # Price and Valuation
+    print("\n  PRICE & VALUATION")
+    print(f"    Current Price:        ${metrics.get('Current Price', 0):,.2f}")
+    print(f"    Market Cap:           ${metrics.get('Market Cap (B)', 0):,.2f}B")
+    print(f"    P/E Ratio:            {metrics.get('P/E Ratio', 0):.2f}")
+    print(f"    Forward P/E:          {metrics.get('Forward P/E', 0):.2f}")
+    print(f"    P/B Ratio:            {metrics.get('P/B Ratio', 0):.2f}")
+    print(f"    PEG Ratio:            {metrics.get('PEG Ratio', 0):.2f}")
+    print(f"    EV/EBITDA:            {metrics.get('EV/EBITDA', 0):.2f}")
+
+    # Intrinsic Value
+    print("\n  INTRINSIC VALUE ANALYSIS")
+    print(f"    DCF Value:            ${metrics.get('Intrinsic Value (DCF)', 0):,.2f}")
+    print(f"    Graham Value:         ${metrics.get('Intrinsic Value (Graham)', 0):,.2f}")
+    print(f"    Avg Intrinsic Value:  ${metrics.get('Avg Intrinsic Value', 0):,.2f}")
+    upside = metrics.get('Upside Potential (%)', 0)
+    upside_indicator = "(UNDERVALUED)" if upside > 0 else "(OVERVALUED)" if upside < 0 else ""
+    print(f"    Upside Potential:     {upside:+.1f}% {upside_indicator}")
+    print(f"    Value Rating:         {metrics.get('Value Rating', 'N/A')}")
+
+    # Profitability
+    print("\n  PROFITABILITY")
+    print(f"    ROE:                  {metrics.get('ROE (%)', 0):.2f}%")
+    print(f"    5Y Avg ROE:           {metrics.get('5Y Avg ROE (%)', 0):.2f}%")
+    print(f"    ROA:                  {metrics.get('ROA (%)', 0):.2f}%")
+    print(f"    Net Margin:           {metrics.get('Net Margin (%)', 0):.2f}%")
+    print(f"    Operating Margin:     {metrics.get('Operating Margin (%)', 0):.2f}%")
+
+    # Financial Health
+    print("\n  FINANCIAL HEALTH")
+    print(f"    Debt to Equity:       {metrics.get('Debt to Equity', 0):.2f}")
+    print(f"    Current Ratio:        {metrics.get('Current Ratio', 0):.2f}")
+    print(f"    Quick Ratio:          {metrics.get('Quick Ratio', 0):.2f}")
+    print(f"    Total Cash:           ${metrics.get('Total Cash (B)', 0):,.2f}B")
+    print(f"    Free Cash Flow:       ${metrics.get('Free Cash Flow (B)', 0):,.2f}B")
+
+    # Growth
+    print("\n  GROWTH")
+    print(f"    Revenue Growth:       {metrics.get('Revenue Growth (%)', 0):.2f}%")
+    print(f"    Revenue CAGR (3Y):    {metrics.get('Revenue CAGR 3Y (%)', 0):.2f}%")
+    print(f"    Earnings Growth:      {metrics.get('Earnings Growth (%)', 0):.2f}%")
+    print(f"    Total Revenue:        ${metrics.get('Total Revenue (B)', 0):,.2f}B")
+
+    # Dividend
+    div_yield = metrics.get('Dividend Yield (%)', 0)
+    if div_yield > 0:
+        print("\n  DIVIDEND")
+        print(f"    Dividend Yield:       {div_yield:.2f}%")
+        print(f"    Payout Ratio:         {metrics.get('Payout Ratio (%)', 0):.2f}%")
+
+    print("\n" + "=" * 70)
+
+
 def main():
     parser = argparse.ArgumentParser(description='Value Investment Stock Scorer')
-    parser.add_argument('ticker_file', help='Text file containing stock tickers (one per line)')
+    parser.add_argument('ticker_file', nargs='?', default=None,
+                       help='Text file containing stock tickers (one per line)')
+    parser.add_argument('-t', '--ticker', type=str,
+                       help='Analyze a single stock ticker (outputs to console)')
     parser.add_argument('-o', '--output', default='value_investment_analysis.xlsx',
                        help='Output Excel file name (default: value_investment_analysis.xlsx)')
     parser.add_argument('-w', '--workers', type=int, default=1,
@@ -1566,8 +1642,49 @@ def main():
     if args.clear_cache:
         scorer.clear_cache()
         print("Cache cleared.")
-        if args.ticker_file == '--clear-cache':
+        if not args.ticker_file and not args.ticker:
             sys.exit(0)
+
+    # Single ticker mode - analyze one stock and output to console
+    if args.ticker:
+        ticker = args.ticker.strip().upper()
+        print(f"Analyzing {ticker}...")
+
+        data = scorer.fetch_stock_data(ticker)
+        if not data:
+            print(f"Error: Could not fetch data for {ticker}")
+            sys.exit(1)
+
+        metrics = scorer.calculate_metrics(data)
+        if not metrics:
+            print(f"Error: Could not calculate metrics for {ticker}")
+            sys.exit(1)
+
+        score = scorer.calculate_quality_score(metrics)
+        metrics['Quality Score'] = score
+
+        # Determine quality rating
+        if score >= 80:
+            metrics['Quality Rating'] = 'A+'
+        elif score >= 70:
+            metrics['Quality Rating'] = 'A'
+        elif score >= 60:
+            metrics['Quality Rating'] = 'B+'
+        elif score >= 50:
+            metrics['Quality Rating'] = 'B'
+        elif score >= 40:
+            metrics['Quality Rating'] = 'C+'
+        elif score >= 30:
+            metrics['Quality Rating'] = 'C'
+        else:
+            metrics['Quality Rating'] = 'D'
+
+        print_single_stock_analysis(metrics)
+        sys.exit(0)
+
+    # Batch mode requires ticker_file
+    if not args.ticker_file:
+        parser.error("Either ticker_file or --ticker is required")
 
     # Read tickers from file
     try:
